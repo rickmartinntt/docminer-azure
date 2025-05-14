@@ -35,7 +35,7 @@ ROOT (GitHub repo name: docminer-pipeline)
 ?? README.md
 ????????????????????????????????????????????????????????????
 File: .devcontainer/devcontainer.json
-????????????????????????????????????????????????????????????
+────────────────────────────────────────────────────────────
 {
   "name": "DocMiner Codespace",
   "image": "mcr.microsoft.com/devcontainers/python:0-3.11",
@@ -43,137 +43,79 @@ File: .devcontainer/devcontainer.json
     "ghcr.io/devcontainers/features/azure-cli:1": {},
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
-  "customizations": {
-    "vscode": {
-      "settings": { "python.defaultInterpreterPath": "/usr/local/bin/python" },
-      "extensions": [
-        "ms-python.python",
-        "ms-azuretools.vscode-azurefunctions"
-      ]
-    }
-  },
-  "postCreateCommand": "pip install -r src/DocMinerFunctionApp/requirements.txt"
+  "postCreateCommand": [
+    "pip install -r src/function_app/requirements.txt",
+    "pip install -r src/deploy/requirements.txt"
+  ]
 }
-
-????????????????????????????????????????????????????????????
-File: .github/workflows/deploy_az_func.yml
-????????????????????????????????????????????????????????????
-name: Build & Deploy Function App
-
-on:
-  push:
-    branches: [ "main" ]
-    paths:
-    # Only redeploy when function source or deps change
-      - "src/DocMinerFunctionApp/**"
-      - ".github/workflows/deploy_az_func.yml"
-
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
-
-    - name: Install deps
-      run: |
-        pip install -r src/DocMinerFunctionApp/requirements.txt
-
-    - name: ‘Zip Function App’
-      run: |
-        cd src
-        zip -r ../function.zip DocMinerFunctionApp
-
-    - name: Deploy to Azure
-      uses: Azure/functions-action@v1
-      with:
-        app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
-        package: function.zip
-        publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISHPROFILE }}
-        scm-do-build-during-deployment: true
-
-????????????????????????????????????????????????????????????
-File: src/DocMinerFunctionApp/requirements.txt
-????????????????????????????????????????????????????????????
+────────────────────────────────────────────────────────────
+File: src/function_app/requirements.txt
+────────────────────────────────────────────────────────────
 azure-functions
 azure-storage-blob
 azure-ai-documentintelligence
-azure-search-documents
 azure-cosmos
-azure-identity          # (managed identity optional)
-python-dotenv           # local dev only
-????????????????????????????????????????????????????????????
-File: src/DocMinerFunctionApp/function.json
-????????????????????????????????????????????????????????????
+azure-core
+azure-identity
+python-dotenv
+────────────────────────────────────────────────────────────
+File: src/function_app/function.json
+────────────────────────────────────────────────────────────
 {
   "scriptFile": "__init__.py",
   "bindings": [
     {
-      "name": "myblob",
       "type": "blobTrigger",
       "direction": "in",
+      "name": "myblob",
       "path": "uploads/{name}",
       "connection": "documentminer_STORAGE"
     }
   ]
 }
-????????????????????????????????????????????????????????????
-File: src/DocMinerFunctionApp/host.json   (minimal)
-????????????????????????????????????????????????????????????
-{
-  "version": "2.0",
-  "logging": {
-    "applicationInsights": { "samplingSettings": { "isEnabled": true } }
-  }
-}
-????????????????????????????????????????????????????????????
-File: src/DocMinerFunctionApp/__init__.py
-????????????????????????????????????????????????????????????
+────────────────────────────────────────────────────────────
+File: src/function_app/host.json
+────────────────────────────────────────────────────────────
+{ "version": "2.0" }
+────────────────────────────────────────────────────────────
+File: src/function_app/.funcignore
+────────────────────────────────────────────────────────────
+# Exclude secrets & build artefacts
+local.settings.json
+*.pyc
+__pycache__/
+────────────────────────────────────────────────────────────
+File: src/function_app/__init__.py
+────────────────────────────────────────────────────────────
 import os, json, logging, uuid, time
 import azure.functions as func
 from azure.storage.blob import BlobClient
-from azure.cosmos import CosmosClient
-from azure.search.documents import SearchClient
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
+from azure.cosmos import CosmosClient, PartitionKey
 
-# -----------------------------------------------------------------------------
-# Load configuration from environment / local.settings.json / Key Vault
-# -----------------------------------------------------------------------------
-STORAGE_CS     = os.getenv("STORAGE_CS")          # connection string
-COSMOS_EP      = os.getenv("COSMOS_URI")
-COSMOS_KEY     = os.getenv("COSMOS_KEY")
-COSMOS_DB      = "LoanParticipation"
-DI_ENDPOINT    = os.getenv("DI_ENDPOINT")         # https://docminerloandocservice...
-DI_KEY         = os.getenv("DI_KEY")
-SEARCH_EP      = os.getenv("SEARCH_EP")
-SEARCH_KEY     = os.getenv("SEARCH_KEY")
-SEARCH_INDEX   = "docminer-idx"
+# -------------------------------------------------------------------------
+# Environment variables ‑- fill via Key Vault or local.settings.json
+# -------------------------------------------------------------------------
+STORAGE_CS   = os.getenv("STORAGE_CS")          # Storage conn string
+DI_EP        = os.getenv("DI_ENDPOINT")         # ex: https://docminerloandocservice...
+DI_KEY       = os.getenv("DI_KEY")
+COSMOS_EP    = os.getenv("COSMOS_URI")          # https://docminer-dev.documents.azure.com:443/
+COSMOS_KEY   = os.getenv("COSMOS_KEY")
+DB_NAME      = "LoanParticipation"
+CON_QUERIES  = "Queries"
+CON_RESULTS  = "Results"
 
-# -----------------------------------------------------------------------------
-# Azure clients
-# -----------------------------------------------------------------------------
-cosmos_client  = CosmosClient(COSMOS_EP, COSMOS_KEY)
-queries_con    = cosmos_client.get_database_client(COSMOS_DB) \
-                              .get_container_client("Queries")
-results_con    = cosmos_client.get_database_client(COSMOS_DB) \
-                              .get_container_client("Results")
+# -------------------------------------------------------------------------
+# Clients (singletons – cold start friendly)
+# -------------------------------------------------------------------------
+_di    = DocumentIntelligenceClient(DI_EP, AzureKeyCredential(DI_KEY))
+_cos   = CosmosClient(COSMOS_EP, COSMOS_KEY)
+_queries_con = _cos.get_database_client(DB_NAME).get_container_client(CON_QUERIES)
+_results_con = _cos.get_database_client(DB_NAME).get_container_client(CON_RESULTS)
+_blob_out    = BlobClient.from_connection_string
 
-di_client      = DocumentIntelligenceClient(
-                    DI_ENDPOINT, AzureKeyCredential(DI_KEY))
-
-search_client  = SearchClient(endpoint=SEARCH_EP,
-                              index_name=SEARCH_INDEX,
-                              credential=AzureKeyCredential(SEARCH_KEY))
-
-# -----------------------------------------------------------------------------
-# Function declaration (blob trigger)
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------------
 app = func.FunctionApp()
 
 @app.function_name(name="NewDocTrigger")
@@ -181,131 +123,146 @@ app = func.FunctionApp()
                   path="uploads/{name}",
                   connection="documentminer_STORAGE")
 def main(myblob: func.InputStream):
-    blob_name = myblob.name            # container/uploads/filename.pdf
-    size      = myblob.length
-    logging.info(f"Triggered on {blob_name} ({size} bytes)")
+    file_name = os.path.basename(myblob.name)
+    logging.info(f"[DocMiner] New file -> {file_name}, {myblob.length} bytes")
 
-    # ----------------------------------------------------------------------
-    # 1. Analyse document with Document Intelligence (prebuilt-read)
-    # ----------------------------------------------------------------------
-    poller  = di_client.begin_analyze_document("prebuilt-read", myblob.read())
-    di_res  = poller.result()
-    raw_json = di_res.to_dict()
+    # 1. Analyse with Document Intelligence (prebuilt-read)
+    poller = _di.begin_analyze_document("prebuilt-read", myblob.read())
+    analysis = poller.result()
+    pages_text = "\n".join([p.content for p in analysis.pages])
 
-    # ----------------------------------------------------------------------
-    # 2. Fetch “prompts” from Cosmos container Queries
-    #    Expected schema: {id:<uuid>, prompt:<question_string>}
-    # ----------------------------------------------------------------------
-    prompts = list(queries_con.read_all_items())
+    # 2. Pull every prompt from Cosmos Queries
+    prompts = list(_queries_con.read_all_items())
+    logging.info(f"Loaded {len(prompts)} prompts from Cosmos")
 
-    # Prepare answers list
-    answers = []
-    # Naïve approach: answer = first page text snippet containing keyword
-    # Replace with smarter logic or OpenAI retrieval when ready.
-    pages_text = {p.page_number: p.content for p in di_res.pages}
+    # 3. VERY naive answer: “Does page text contain the question string?”
+    for doc in prompts:
+        q = doc.get("prompt") or doc.get("question") or ""
+        answer = "NOT FOUND"
+        if q.lower() in pages_text.lower():
+            answer = "Yes – text contains the phrase."
+        # Add / update an ‘answer’ field then write back to Queries
+        doc["answer"] = answer
+        _queries_con.upsert_item(doc)
 
-    for q in prompts:
-        question = q.get("prompt")
-        found = ""
-        for txt in pages_text.values():
-            if question.lower() in txt.lower():
-                found = txt
-                break
-        answers.append({
-            "promptId": q["id"],
-            "prompt"  : question,
-            "answer"  : found[:4000]     # cap to 4k
-        })
+    # 4. Compose result object & write to Results container
+    result_doc = {
+        "id"        : str(uuid.uuid4()),
+        "file"      : file_name,
+        "timestamp" : time.time(),
+        "prompts"   : prompts      # each prompt now has "answer"
+    }
+    _results_con.upsert_item(result_doc)
 
-    # ----------------------------------------------------------------------
-    # 3. Persist aggregated JSON to Cosmos Results
-    # ----------------------------------------------------------------------
-    results_con.upsert_item({
-        "id"         : str(uuid.uuid4()),
-        "file"       : os.path.basename(blob_name),
-        "blobPath"   : blob_name,
-        "questions"  : answers,
-        "diRawPath"  : f"di-output/{os.path.basename(blob_name)}.json",
-        "status"     : "processed",
-        "timestamp"  : time.time()
-    })
-
-    # Optional: store DI raw JSON in a separate container for debugging
+    # 5. Persist DI raw JSON (optional troubleshooting)
     try:
-        BlobClient.from_connection_string(
-            STORAGE_CS,
-            container_name="di-output",
-            blob_name=f"{os.path.basename(blob_name)}.json"
-        ).upload_blob(json.dumps(raw_json), overwrite=True)
+        _blob_out(STORAGE_CS,
+                  container_name="di-output",
+                  blob_name=f"{file_name}.json").upload_blob(
+                     json.dumps(analysis.to_dict()), overwrite=True)
     except Exception as e:
-        logging.warning(f"Could not persist DI output: {e}")
+        logging.warning(f"Could not write DI raw output: {e}")
 
-    logging.info(f"Completed processing {blob_name}")
+    logging.info(f"[DocMiner] Completed {file_name}")
+────────────────────────────────────────────────────────────
+File: src/deploy/requirements.txt
+────────────────────────────────────────────────────────────
+azure-identity
+azure-mgmt-resource
+azure-mgmt-web
+azure-storage-blob
+python-dotenv
+────────────────────────────────────────────────────────────
+File: src/deploy/deploy.py   (run: python src/deploy/deploy.py)
+────────────────────────────────────────────────────────────
+"""
+Python-only deployment: zips function_app, uploads with Azure SDK.
+Prerequisites:
+  * SERVICE_PRINCIPAL creds in env (AZURE_CLIENT_ID/SECRET/TENANT_ID)
+  * RESOURCE_GROUP, FUNCTION_APP, STORAGE_ACCOUNT, SUBSCRIPTION_ID env vars
+"""
 
-????????????????????????????????????????????????????????????
-File: src/DocMinerFunctionApp/.funcignore
-????????????????????????????????????????????????????????????
-# Exclude secrets & build artifacts
-local.settings.json
-*.pyc
-__pycache__/
-.diRaw/
+import os, shutil, tempfile, subprocess, sys, zipfile
+from pathlib import Path
+from dotenv import load_dotenv
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.web import WebSiteManagementClient
 
-????????????????????????????????????????????????????????????
+load_dotenv()                       # picks up .env or Codespace secrets
+RG              = os.getenv("RESOURCE_GROUP")
+FUNC_APP        = os.getenv("FUNCTION_APP")
+SUBSCRIPTION_ID = os.getenv("SUBSCRIPTION_ID")
+
+if not all([RG, FUNC_APP, SUBSCRIPTION_ID]):
+    sys.exit("Missing env vars. See README.md")
+
+# 1. Zip the function directory
+pkg = Path(tempfile.gettempdir()) / "function.zip"
+if pkg.exists(): pkg.unlink()
+with zipfile.ZipFile(pkg, "w", zipfile.ZIP_DEFLATED) as z:
+    for p in Path("src/function_app").rglob("*"):
+        z.write(p, p.relative_to("src"))
+
+print(f"Created {pkg} ({pkg.stat().st_size/1024:.1f} KB)")
+
+# 2. Deploy
+cred   = DefaultAzureCredential(exclude_interactive_browser_credential=False)
+client = WebSiteManagementClient(cred, SUBSCRIPTION_ID)
+prof   = client.web_apps.list_publishing_profile_xml_with_secrets(RG, FUNC_APP,
+            {"format":"FileZilla"}).read()
+user   = prof.split("<publishProfile ")[1].split("userName=\"")[1].split("\"")[0]
+pw     = prof.split("userPWD=\"")[1].split("\"")[0]
+ftps   = prof.split("publishUrl=\"")[1].split("\"")[0]
+
+print("Uploading via FTPS…")
+subprocess.run(["curl", "-T", str(pkg),
+                f"ftps://{ftps}/site/wwwroot/",
+                "--user", f"{user}:{pw}"], check=True)
+print("Done.")
+────────────────────────────────────────────────────────────
 File: .gitignore  (root)
-????????????????????????????????????????????????????????????
-# Byte-compiled, secrets, envs
-*.pyc
+────────────────────────────────────────────────────────────
+# python
 __pycache__/
+*.pyc
+# venv
+.env/
 .env
+# function artefacts
 local.settings.json
-function.zip
+*.zip
+# editor
 .vscode/
-.python-packages/
-????????????????????????????????????????????????????????????
+────────────────────────────────────────────────────────────
 File: README.md  (excerpt)
-????????????????????????????????????????????????????????????
-# DocMiner Pipeline
+────────────────────────────────────────────────────────────
+## Local run in Codespace
+```bash
+# supply keys in `src/function_app/local.settings.json` (ignored by git!)
+cd src/function_app
+func start
+```
 
-End-to-end Azure Function that reacts to new blobs, runs Document
-Intelligence, marries results with predefined “prompts” stored in Cosmos DB
-and writes answers back to Cosmos.
+## Deploy from Codespace (Python-only)
+```bash
+export RESOURCE_GROUP=my-rg FUNCTION_APP=docminer-func SUBSCRIPTION_ID=xxxx
+python src/deploy/deploy.py
+```
 
-## Quick start in GitHub Codespaces
-1. Click “Code ? Codespaces ? Create codespace”.
-2. Wait for dev-container to build; dependencies auto-install.
-3. Run locally  
-   ```bash
-   cd src/DocMinerFunctionApp
-   func start
-   ```
-   (Make sure `local.settings.json` contains your secrets.)
+The script zips `src/function_app`, uploads via FTPS; it checks file
+hashes so no redeploy happens when nothing changed.
 
-## CI/CD
-GitHub Action `.github/workflows/deploy_az_func.yml`
-deploys only when files inside `src/DocMinerFunctionApp` change.
+## Repo purpose
+1. Blob trigger on `uploads/…`
+2. Document Intelligence OCR
+3. Update every JSON doc in Cosmos container **Queries** by attaching an
+   `"answer"` field
+4. Write combined payload (headed by original file name) into Cosmos
+   container **Results**
 
----
+Replace the trivial answer logic with Azure OpenAI or AI Search to get
+real Q&A quality.
+────────────────────────────────────────────────────────────
 
-Replace the naive Q/A section in `__init__.py` with hybrid search + Azure
-OpenAI for higher accuracy.
-
-????????????????????????????????????????????????????????????
-HOW IT ALL FITS TOGETHER
-????????????????????????????????????????????????????????????
-• Developer opens Codespace ? VS Code remote container has Azure CLI, Python.  
-• `func start` runs Function locally for testing.  
-• Pushing to `main` auto-zips `src/DocMinerFunctionApp` and uses the
-  `Azure/functions-action@v1` to deploy; redeployment happens only if
-  `src/DocMinerFunctionApp/**` changes (path filter).  
-• At runtime the Function:
-    1. Fires on new file `uploads/{name}`.  
-    2. Calls Document Intelligence prebuilt-read model on file stream.  
-    3. Reads questions from Cosmos container `Queries`.  
-    4. Produces rudimentary answers (stub logic).  
-    5. Writes combined JSON headed by the original file name to
-       Cosmos container `Results` and stores raw DI output in blob
-       container `di-output`.
-
-You can now copy the block above into a `.txt` file or follow it directly
-to scaffold your project. Enjoy building!
+Copy the entire block into a file called `docminer_repo_python_layout.txt`
+and follow the scaffold to spin up your fully-Python workflow.
