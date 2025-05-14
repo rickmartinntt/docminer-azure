@@ -1,0 +1,12 @@
+{
+  "name": "DocMiner Codespace",
+  "image": "mcr.microsoft.com/devcontainers/python:0-3.11",
+  "features": {
+    "ghcr.io/devcontainers/features/azure-cli:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "postCreateCommand": [
+    "pip install -r src/function_app/requirements.txt",
+    "pip install -r src/deploy/requirements.txt"
+  ]
+}

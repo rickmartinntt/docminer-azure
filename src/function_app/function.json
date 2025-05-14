@@ -1,0 +1,12 @@
+{
+  "scriptFile": "__init__.py",
+  "bindings": [
+    {
+      "type": "blobTrigger",
+      "direction": "in",
+      "name": "myblob",
+      "path": "uploads/{name}",
+      "connection": "documentminer_STORAGE"
+    }
+  ]
+}

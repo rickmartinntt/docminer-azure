@@ -1,3 +1,7 @@
+To deploy to azure bash ------ 
+  ./scripts/deploy.py
+
+
 Below is a single text-file you can paste into “docminer_repo_layout.txt”, print, e-mail, or just follow line-by-line.  
 It contains:
 

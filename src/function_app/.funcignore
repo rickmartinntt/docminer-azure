@@ -1,0 +1,4 @@
+# Exclude secrets & build artefacts
+local.settings.json
+*.pyc
+__pycache__/
